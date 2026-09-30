@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DataConnection, Peer } from "peerjs";
+import type { DataConnection, Peer, PeerOptions } from "peerjs";
 
 type Player = "X" | "O";
 type Cell = Player | null;
@@ -34,6 +34,22 @@ const LEVELS = [
   { name: "Unbeatable", smartChance: 1 },
 ];
 const MAX_LEVEL = LEVELS.length;
+
+// PeerJS options shared by host and joiner. STUN alone fails across many networks
+// (mobile data, college Wi-Fi, strict routers), so public TURN relays are included.
+// For a real launch, replace the TURN entries with your own free credentials.
+const PEER_OPTIONS: PeerOptions = {
+  debug: 2,
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+    ],
+  },
+};
 
 /* ------------------------------ game logic ------------------------------ */
 
@@ -449,24 +465,24 @@ export default function Home() {
     updateNetState("connecting", "Connecting to the host… keep this page open.");
     try {
       const { default: Peer } = await import("peerjs");
-      const peer = new Peer("", {
-        debug: 2,
-        config: { iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun.cloudflare.com:3478" },
-        ] },
-      });
+      const peer = new Peer(PEER_OPTIONS);
       peerRef.current = peer;
+      // If the signaling server drops us, reconnect instead of dying silently.
+      peer.on("disconnected", () => {
+        if (peerRef.current === peer && !peer.destroyed) peer.reconnect();
+      });
       peer.on("open", () => {
         const conn = peer.connect(cleanId, { reliable: true });
         connectionRef.current = conn;
         const connectTimeout = window.setTimeout(() => {
+          if (connectionRef.current !== conn) return;
           if (!conn.open) {
             updateNetState("error", "The host did not answer. Make sure the host is online, then try a fresh link.");
             conn.close();
           }
         }, 15000);
         conn.on("open", () => {
+          if (connectionRef.current !== conn) return;
           window.clearTimeout(connectTimeout);
           updateNetState("connected", "Connected to the room. You are Player O.");
         });
@@ -490,15 +506,19 @@ export default function Home() {
         });
         conn.on("close", () => {
           window.clearTimeout(connectTimeout);
+          // Ignore close events from an old connection that was replaced or cleaned up.
+          if (connectionRef.current !== conn) return;
           updateNetState("error", "The host disconnected or the room link expired. Ask them to create a fresh room.");
         });
         conn.on("error", (err) => {
           window.clearTimeout(connectTimeout);
+          if (connectionRef.current !== conn) return;
           console.error("PeerJS connection error:", err);
           updateNetState("error", "Could not connect. Check that the host is online and try again.");
         });
       });
       peer.on("error", (err) => {
+        if (peerRef.current !== peer) return;
         console.error("PeerJS join error:", err.type, err);
         updateNetState("error", `Connection failed (${err.type}). Create a fresh room link and try again.`);
       });
@@ -515,14 +535,12 @@ export default function Home() {
     updateNetState("hosting", "Starting a new room…");
     try {
       const { default: Peer } = await import("peerjs");
-      const peer = new Peer("", {
-        debug: 2,
-        config: { iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun.cloudflare.com:3478" },
-        ] },
-      });
+      const peer = new Peer(PEER_OPTIONS);
       peerRef.current = peer;
+      // Keep the room ID alive: if the signaling server drops us, reconnect with the same ID.
+      peer.on("disconnected", () => {
+        if (peerRef.current === peer && !peer.destroyed) peer.reconnect();
+      });
       peer.on("open", (id) => {
         const url = new URL(window.location.href);
         url.searchParams.set("room", id);
@@ -538,6 +556,7 @@ export default function Home() {
         }
         connectionRef.current = conn;
         conn.on("open", () => {
+          if (connectionRef.current !== conn) return;
           updateNetState("connected", "Player O joined. You are Player X.");
           conn.send({ type: "snapshot", ...gameSnapshotRef.current } satisfies OnlineMessage);
         });
@@ -552,10 +571,18 @@ export default function Home() {
             setLevel(1); setLeveledUp(false); setRound((r) => r + 1);
           }
         });
-        conn.on("close", () => updateNetState("hosting", "Player disconnected. You can share the same link again."));
-        conn.on("error", (err) => { console.error("PeerJS data error:", err); updateNetState("error", "The multiplayer connection was interrupted."); });
+        conn.on("close", () => {
+          if (connectionRef.current !== conn) return;
+          updateNetState("hosting", "Player disconnected. You can share the same link again.");
+        });
+        conn.on("error", (err) => {
+          if (connectionRef.current !== conn) return;
+          console.error("PeerJS data error:", err);
+          updateNetState("error", "The multiplayer connection was interrupted.");
+        });
       });
       peer.on("error", (err) => {
+        if (peerRef.current !== peer) return;
         console.error("PeerJS host error:", err.type, err);
         updateNetState("error", `Room failed (${err.type}). Create a new room.`);
       });
