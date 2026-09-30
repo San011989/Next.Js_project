@@ -449,7 +449,7 @@ export default function Home() {
     updateNetState("connecting", "Connecting to the host… keep this page open.");
     try {
       const { default: Peer } = await import("peerjs");
-      const peer = new Peer(undefined, {
+      const peer = new Peer("", {
         debug: 2,
         config: { iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -515,7 +515,7 @@ export default function Home() {
     updateNetState("hosting", "Starting a new room…");
     try {
       const { default: Peer } = await import("peerjs");
-      const peer = new Peer(undefined, {
+      const peer = new Peer("", {
         debug: 2,
         config: { iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
