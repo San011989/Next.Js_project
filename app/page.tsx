@@ -6,8 +6,12 @@ import type { DataConnection, Peer } from "peerjs";
 type Player = "X" | "O";
 type Cell = Player | null;
 type Mode = "ai" | "pvp" | "online";
-type NetState = "idle" | "waiting" | "connecting" | "connected" | "closed" | "error";
-type Msg = { type: "move"; index: number } | { type: "next" } | { type: "reset" };
+type NetState = "idle" | "hosting" | "connecting" | "connected" | "error";
+type OnlineMessage =
+  | { type: "move"; index: number; player: Player }
+  | { type: "next" }
+  | { type: "reset" }
+  | { type: "snapshot"; cells: Cell[]; xIsNext: boolean; scores: { X: number; O: number; draws: number }; level: number; round: number };
 
 const WINNING_LINES = [
   [0, 1, 2],
@@ -146,9 +150,14 @@ const CSS = `
 }
 
 /* mode switch */
-.ttt-seg { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
-.ttt-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 999px; background: var(--card); box-shadow: 0 2px 8px -2px rgba(0,0,0,.25); transition: transform .35s cubic-bezier(.3,1.4,.5,1); }
+.ttt-seg { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 4px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.ttt-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: calc((100% - 8px) / 3); border-radius: 999px; background: var(--card); box-shadow: 0 2px 8px -2px rgba(0,0,0,.25); transition: transform .35s cubic-bezier(.3,1.4,.5,1); }
 .ttt-seg-pill[data-pos="1"] { transform: translateX(100%); }
+.ttt-seg-pill[data-pos="2"] { transform: translateX(200%); }
+.ttt-online-panel { display:flex; flex-direction:column; gap:.7rem; padding:1rem; border:1px solid rgba(103,232,249,.18); background:rgba(3,8,22,.3); border-radius:1.1rem; }
+.ttt-online-input { width:100%; min-width:0; border:1px solid var(--line); border-radius:.8rem; padding:.7rem .8rem; background:rgba(3,8,22,.55); color:var(--ink); outline:none; }
+.ttt-online-input:focus { border-color:var(--x); }
+.ttt-online-note { font-size:.82rem; line-height:1.45; color:var(--muted); overflow-wrap:anywhere; }
 .ttt-seg button { position: relative; z-index: 1; padding: .55rem 1rem; font-size: .875rem; font-weight: 600; color: var(--muted); border-radius: 999px; transition: color .2s; }
 .ttt-seg button[aria-selected="true"] { color: var(--ink); }
 .ttt-seg button:focus-visible, .ttt-btn:focus-visible { outline: 3px solid var(--x); outline-offset: 2px; }
@@ -361,14 +370,6 @@ const CSS = `
 }
 .ttt-btn.ghost:hover { background: rgba(255,255,255,.07); border-color: rgba(151,169,211,.4); }
 .ttt-confetti span { box-shadow: 0 0 8px currentColor; }
-/* third tab (online) */
-.ttt-seg.three { grid-template-columns: repeat(3, 1fr); }
-.ttt-seg.three button { padding-inline: .4rem; }
-.ttt-seg.three .ttt-seg-pill { width: calc(33.333% - 2.667px); }
-.ttt-seg.three .ttt-seg-pill[data-pos="1"] { transform: translateX(100%); }
-.ttt-seg.three .ttt-seg-pill[data-pos="2"] { transform: translateX(200%); }
-.ttt-link { flex: 1; min-width: 0; padding: .6rem .8rem; border-radius: .9rem; font-size: .8rem; color: var(--ink); background: rgba(3, 8, 22, .56); border: 1px solid rgba(151,169,211,.13); }
-.ttt-btn.small { padding: .6rem 1rem; }
 @media (max-width: 420px) {
   .ttt-card { border-radius: 1.5rem; }
   .ttt-board { width: min(82vw, 19rem); }
@@ -406,26 +407,195 @@ export default function Home() {
   const [level, setLevel] = useState(1);
   const [leveledUp, setLeveledUp] = useState(false);
   const [round, setRound] = useState(0);
-
-  // online play (peer-to-peer, no account or server of your own needed)
   const [netState, setNetState] = useState<NetState>("idle");
-  const [netMsg, setNetMsg] = useState("");
-  const [roomId, setRoomId] = useState("");
-  const [myRole, setMyRole] = useState<Player>("X");
-  const [copied, setCopied] = useState(false);
+  const [netMessage, setNetMessage] = useState("Create a room and share its link.");
+  const [roomInput, setRoomInput] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+  const [mySymbol, setMySymbol] = useState<Player>("X");
   const peerRef = useRef<Peer | null>(null);
-  const connRef = useRef<DataConnection | null>(null);
-  const sessionRef = useRef(0);
-  const incomingRef = useRef<(m: Msg) => void>(() => {});
+  const connectionRef = useRef<DataConnection | null>(null);
+  const applyMoveRef = useRef<(index: number, player: Player) => void>(() => {});
+  const gameSnapshotRef = useRef({ cells, xIsNext, scores, level, round });
+  gameSnapshotRef.current = { cells, xIsNext, scores, level, round };
+
+  function updateNetState(next: NetState, message: string) {
+    setNetState(next);
+    setNetMessage(message);
+  }
+
+  function sendOnline(message: OnlineMessage) {
+    const conn = connectionRef.current;
+    if (conn?.open) conn.send(message);
+  }
+
+  function cleanupPeer() {
+    connectionRef.current?.close();
+    connectionRef.current = null;
+    peerRef.current?.destroy();
+    peerRef.current = null;
+    setShareUrl("");
+  }
+
+  async function joinRoom(roomId: string) {
+    const cleanId = roomId.trim();
+    if (!cleanId) {
+      updateNetState("error", "Enter a valid room ID or open the invitation link.");
+      return;
+    }
+    cleanupPeer();
+    setMode("online");
+    setMySymbol("O");
+    setRoomInput(cleanId);
+    updateNetState("connecting", "Connecting to the host… keep this page open.");
+    try {
+      const { default: Peer } = await import("peerjs");
+      const peer = new Peer(undefined, {
+        debug: 2,
+        config: { iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun.cloudflare.com:3478" },
+        ] },
+      });
+      peerRef.current = peer;
+      peer.on("open", () => {
+        const conn = peer.connect(cleanId, { reliable: true });
+        connectionRef.current = conn;
+        const connectTimeout = window.setTimeout(() => {
+          if (!conn.open) {
+            updateNetState("error", "The host did not answer. Make sure the host is online, then try a fresh link.");
+            conn.close();
+          }
+        }, 15000);
+        conn.on("open", () => {
+          window.clearTimeout(connectTimeout);
+          updateNetState("connected", "Connected to the room. You are Player O.");
+        });
+        conn.on("data", (raw) => {
+          const msg = raw as OnlineMessage;
+          if (!msg || typeof msg !== "object") return;
+          if (msg.type === "snapshot") {
+            setCells(msg.cells);
+            setXIsNext(msg.xIsNext);
+            setScores(msg.scores);
+            setLevel(msg.level);
+            setRound(msg.round);
+          } else if (msg.type === "move") {
+            applyMoveRef.current(msg.index, msg.player);
+          } else if (msg.type === "next") {
+            setCells(Array(9).fill(null)); setXIsNext(true); setRound((r) => r + 1);
+          } else if (msg.type === "reset") {
+            setCells(Array(9).fill(null)); setXIsNext(true); setScores({ X: 0, O: 0, draws: 0 });
+            setLevel(1); setLeveledUp(false); setRound((r) => r + 1);
+          }
+        });
+        conn.on("close", () => {
+          window.clearTimeout(connectTimeout);
+          updateNetState("error", "The host disconnected or the room link expired. Ask them to create a fresh room.");
+        });
+        conn.on("error", (err) => {
+          window.clearTimeout(connectTimeout);
+          console.error("PeerJS connection error:", err);
+          updateNetState("error", "Could not connect. Check that the host is online and try again.");
+        });
+      });
+      peer.on("error", (err) => {
+        console.error("PeerJS join error:", err.type, err);
+        updateNetState("error", `Connection failed (${err.type}). Create a fresh room link and try again.`);
+      });
+    } catch (err) {
+      console.error(err);
+      updateNetState("error", "PeerJS could not start. Check that it is installed with npm install peerjs.");
+    }
+  }
+
+  async function createRoom() {
+    cleanupPeer();
+    setMode("online");
+    setMySymbol("X");
+    updateNetState("hosting", "Starting a new room…");
+    try {
+      const { default: Peer } = await import("peerjs");
+      const peer = new Peer(undefined, {
+        debug: 2,
+        config: { iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun.cloudflare.com:3478" },
+        ] },
+      });
+      peerRef.current = peer;
+      peer.on("open", (id) => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", id);
+        const link = url.toString();
+        setShareUrl(link);
+        setRoomInput(id);
+        updateNetState("hosting", "Room ready. Share the invitation link and keep this page open.");
+      });
+      peer.on("connection", (conn) => {
+        if (connectionRef.current && connectionRef.current.open) {
+          conn.close();
+          return;
+        }
+        connectionRef.current = conn;
+        conn.on("open", () => {
+          updateNetState("connected", "Player O joined. You are Player X.");
+          conn.send({ type: "snapshot", ...gameSnapshotRef.current } satisfies OnlineMessage);
+        });
+        conn.on("data", (raw) => {
+          const msg = raw as OnlineMessage;
+          if (!msg || typeof msg !== "object") return;
+          if (msg.type === "move") applyMoveRef.current(msg.index, msg.player);
+          else if (msg.type === "next") {
+            setCells(Array(9).fill(null)); setXIsNext(true); setRound((r) => r + 1);
+          } else if (msg.type === "reset") {
+            setCells(Array(9).fill(null)); setXIsNext(true); setScores({ X: 0, O: 0, draws: 0 });
+            setLevel(1); setLeveledUp(false); setRound((r) => r + 1);
+          }
+        });
+        conn.on("close", () => updateNetState("hosting", "Player disconnected. You can share the same link again."));
+        conn.on("error", (err) => { console.error("PeerJS data error:", err); updateNetState("error", "The multiplayer connection was interrupted."); });
+      });
+      peer.on("error", (err) => {
+        console.error("PeerJS host error:", err.type, err);
+        updateNetState("error", `Room failed (${err.type}). Create a new room.`);
+      });
+    } catch (err) {
+      console.error(err);
+      updateNetState("error", "PeerJS could not start. Check that it is installed with npm install peerjs.");
+    }
+  }
+
+  async function shareRoom() {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setNetMessage("Invitation link copied. Send it to your friend.");
+    } catch {
+      setNetMessage("Copy this invitation link manually: " + shareUrl);
+    }
+  }
+
+  useEffect(() => {
+    const room = new URLSearchParams(window.location.search).get("room");
+    // Deferring by one tick avoids duplicate auto-joins during React Strict Mode's
+    // development-only effect check.
+    const timer = room ? window.setTimeout(() => void joinRoom(room), 0) : undefined;
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      connectionRef.current?.close();
+      peerRef.current?.destroy();
+    };
+    // Invitation links are read only when the page first mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { winner, line: winningLine } = calculateWinner(cells);
   const isDraw = !winner && cells.every((cell) => cell !== null);
   const roundOver = !!winner || isDraw;
   const currentPlayer: Player = xIsNext ? "X" : "O";
   const isAiTurn = mode === "ai" && !xIsNext && !roundOver;
-  const waitingOnline = mode === "online" && (netState !== "connected" || currentPlayer !== myRole);
 
-  const celebrate = !!winner && !(mode === "ai" && winner === "O") && !(mode === "online" && winner !== myRole);
+  const celebrate = !!winner && !(mode === "ai" && winner === "O");
   const confetti = useMemo(() => (celebrate ? makeConfetti() : []), [celebrate, round]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function applyMove(index: number, player: Player) {
@@ -443,10 +613,18 @@ export default function Home() {
     }
   }
 
+  applyMoveRef.current = applyMove;
+
   function handleClick(index: number) {
-    if (cells[index] || roundOver || isAiTurn || waitingOnline) return;
+    if (cells[index] || roundOver || isAiTurn) return;
+    if (mode === "online") {
+      if (netState !== "connected") return;
+      if (currentPlayer !== mySymbol) return;
+      applyMove(index, currentPlayer);
+      sendOnline({ type: "move", index, player: currentPlayer });
+      return;
+    }
     applyMove(index, currentPlayer);
-    if (mode === "online") send({ type: "move", index });
   }
 
   // Keyboard: press 1-9 to play a cell.
@@ -472,10 +650,10 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAiTurn, cells, level]);
 
-  function handleNextRound(remote = false) {
-    if (mode === "online" && !remote) {
-      if (netState !== "connected") return;
-      send({ type: "next" });
+  function handleNextRound() {
+    if (mode === "online") {
+      if (netState !== "connected" || !roundOver) return;
+      sendOnline({ type: "next" });
     }
     // Difficulty goes up after every finished round in AI mode.
     if (mode === "ai" && roundOver && level < MAX_LEVEL) {
@@ -488,6 +666,11 @@ export default function Home() {
   }
 
   function resetAll(nextMode: Mode = mode) {
+    if (mode === "online" && nextMode === mode && netState === "connected") sendOnline({ type: "reset" });
+    if (nextMode !== "online") {
+      cleanupPeer();
+      updateNetState("idle", "Create a room and share its link.");
+    }
     setMode(nextMode);
     setCells(Array(9).fill(null));
     setXIsNext(true);
@@ -496,177 +679,6 @@ export default function Home() {
     setLeveledUp(false);
     setRound((r) => r + 1);
   }
-
-  function handleResetScores() {
-    resetAll();
-    if (mode === "online" && netState === "connected") send({ type: "reset" });
-  }
-
-  /* ------------------------------ online play ------------------------------ */
-
-  function send(msg: Msg) {
-    const c = connRef.current;
-    if (c && c.open) c.send(msg);
-  }
-
-  // Always points at the latest render so incoming moves see the current board.
-  incomingRef.current = (m) => {
-    const opponent: Player = myRole === "X" ? "O" : "X";
-    if (m.type === "move") {
-      if (!Number.isInteger(m.index) || m.index < 0 || m.index > 8) return;
-      if (cells[m.index] || roundOver || currentPlayer !== opponent) return;
-      applyMove(m.index, opponent);
-    } else if (m.type === "next") {
-      handleNextRound(true);
-    } else if (m.type === "reset") {
-      resetAll("online");
-    }
-  };
-
-  function closeNet() {
-    sessionRef.current++;
-    connRef.current?.close();
-    peerRef.current?.destroy();
-    connRef.current = null;
-    peerRef.current = null;
-    setNetState("idle");
-    setNetMsg("");
-    setRoomId("");
-    setCopied(false);
-  }
-
-  function attach(c: DataConnection, session: number) {
-    connRef.current = c;
-    c.on("open", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("connected");
-      setNetMsg("");
-    });
-    c.on("data", (d) => {
-      if (session === sessionRef.current) incomingRef.current(d as Msg);
-    });
-    c.on("close", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("closed");
-    });
-    c.on("error", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("The connection was interrupted.");
-    });
-  }
-
-  async function startHosting() {
-    closeNet();
-    const session = sessionRef.current;
-    setMyRole("X");
-    setNetState("waiting");
-    try {
-      const { Peer } = await import("peerjs");
-      if (session !== sessionRef.current) return;
-      const id = `ttt-${Math.random().toString(36).slice(2, 8)}`;
-      const peer = new Peer(id);
-      peerRef.current = peer;
-      peer.on("open", () => {
-        if (session === sessionRef.current) setRoomId(id);
-      });
-      peer.on("connection", (c) => {
-        if (session !== sessionRef.current) return;
-        if (connRef.current) {
-          c.close(); // room already has two players
-          return;
-        }
-        attach(c, session);
-      });
-      peer.on("error", () => {
-        if (session !== sessionRef.current) return;
-        setNetState("error");
-        setNetMsg("Could not create the room. Check your internet and try again.");
-      });
-    } catch {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("Could not start online play.");
-    }
-  }
-
-  async function joinRoom(id: string) {
-    closeNet();
-    const session = sessionRef.current;
-    resetAll("online");
-    setMyRole("O");
-    setNetState("connecting");
-    try {
-      const { Peer } = await import("peerjs");
-      if (session !== sessionRef.current) return;
-      const peer = new Peer();
-      peerRef.current = peer;
-      peer.on("open", () => {
-        if (session !== sessionRef.current) return;
-        attach(peer.connect(id, { reliable: true }), session);
-      });
-      peer.on("error", () => {
-        if (session !== sessionRef.current) return;
-        setNetState("error");
-        setNetMsg("Could not find that room. Ask your friend for a fresh link.");
-      });
-      setTimeout(() => {
-        if (session === sessionRef.current && !connRef.current?.open) {
-          setNetState("error");
-          setNetMsg("Could not connect. Ask your friend for a fresh link.");
-        }
-      }, 15000);
-    } catch {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("Could not start online play.");
-    }
-  }
-
-  function switchMode(next: Mode) {
-    closeNet();
-    if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
-    resetAll(next);
-    if (next === "online") startHosting();
-  }
-
-  const shareUrl =
-    roomId && typeof window !== "undefined"
-      ? `${window.location.origin}${window.location.pathname}?room=${roomId}`
-      : "";
-  const canShare = typeof navigator !== "undefined" && "share" in navigator;
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch {}
-  }
-
-  async function shareLink() {
-    try {
-      await navigator.share({ title: "Tic-Tac-Toe", text: "Play Tic-Tac-Toe with me!", url: shareUrl });
-    } catch {}
-  }
-
-  // Opening a shared link (?room=...) joins that game automatically.
-  useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("room");
-    const t = id ? setTimeout(() => joinRoom(id), 0) : undefined;
-    return () => {
-      clearTimeout(t);
-      closeNet();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const label = (p: Player) =>
-    mode === "ai"
-      ? p === "X" ? "You (X)" : "AI (O)"
-      : mode === "online"
-        ? p === myRole ? `You (${p})` : `Friend (${p})`
-        : `Player ${p}`;
 
   let status: React.ReactNode;
   let statusColor = "var(--ink)";
@@ -677,11 +689,7 @@ export default function Home() {
         ? winner === "X"
           ? "You win! 🎉"
           : "The AI took this one"
-        : mode === "online"
-          ? winner === myRole
-            ? "You win! 🎉"
-            : "Your friend took this one"
-          : `Player ${winner} wins! 🎉`;
+        : `Player ${winner} wins! 🎉`;
   } else if (isDraw) {
     statusColor = "var(--gold)";
     status = "Draw. Nobody wins this round";
@@ -700,20 +708,8 @@ export default function Home() {
       </>
     );
   } else if (mode === "online") {
-    if (netState !== "connected") {
-      statusColor = "var(--gold)";
-      status =
-        netState === "closed"
-          ? "Your friend left the game"
-          : netState === "error"
-            ? "Connection problem"
-            : netState === "connecting"
-              ? "Connecting…"
-              : "Waiting for your friend to join";
-    } else {
-      statusColor = xIsNext ? "var(--x)" : "var(--o)";
-      status = currentPlayer === myRole ? "Your move" : "Friend's move";
-    }
+    statusColor = netState === "connected" ? (currentPlayer === mySymbol ? "var(--x)" : "var(--o)") : "var(--gold)";
+    status = netState !== "connected" ? netMessage : currentPlayer === mySymbol ? "Your move" : "Waiting for your opponent…";
   } else {
     statusColor = xIsNext ? "var(--x)" : "var(--o)";
     status = `Player ${currentPlayer}'s move`;
@@ -757,18 +753,37 @@ export default function Home() {
 
       <main className="ttt-card flex flex-col gap-5">
         {/* Mode switch */}
-        <div className="ttt-seg three" role="tablist" aria-label="Game mode">
+        <div className="ttt-seg" role="tablist" aria-label="Game mode">
           <div className="ttt-seg-pill" data-pos={mode === "ai" ? 0 : mode === "pvp" ? 1 : 2} />
-          <button role="tab" aria-selected={mode === "ai"} onClick={() => mode !== "ai" && switchMode("ai")}>
+          <button role="tab" aria-selected={mode === "ai"} onClick={() => mode !== "ai" && resetAll("ai")}>
             Player vs AI
           </button>
-          <button role="tab" aria-selected={mode === "pvp"} onClick={() => mode !== "pvp" && switchMode("pvp")}>
+          <button role="tab" aria-selected={mode === "pvp"} onClick={() => mode !== "pvp" && resetAll("pvp")}>
             2 Players
           </button>
-          <button role="tab" aria-selected={mode === "online"} onClick={() => mode !== "online" && switchMode("online")}>
+          <button role="tab" aria-selected={mode === "online"} onClick={() => mode !== "online" && resetAll("online")}>
             Online
           </button>
         </div>
+
+        {mode === "online" && (
+          <section className="ttt-online-panel" aria-label="Online multiplayer">
+            <strong className="text-sm">Online multiplayer</strong>
+            <p className="ttt-online-note">{netMessage}</p>
+            {shareUrl && (
+              <>
+                <input className="ttt-online-input" aria-label="Invitation link" readOnly value={shareUrl} onFocus={(e) => e.currentTarget.select()} />
+                <button className="ttt-btn primary" onClick={shareRoom}>Copy invitation link</button>
+              </>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button className="ttt-btn ghost" onClick={createRoom}>Create room</button>
+              <input className="ttt-online-input" style={{ flex: "1 1 8rem" }} aria-label="Room ID" placeholder="Paste room ID" value={roomInput} onChange={(e) => setRoomInput(e.target.value)} />
+              <button className="ttt-btn ghost" onClick={() => void joinRoom(roomInput)}>Join room</button>
+            </div>
+            <p className="ttt-online-note">The host must keep the game open. If a connection fails, create a fresh room and share its new link. Peer-to-peer connections can be blocked by some networks.</p>
+          </section>
+        )}
 
         {/* Difficulty */}
         {mode === "ai" && (
@@ -789,42 +804,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Online room */}
-        {mode === "online" && (
-          <div className="ttt-level">
-            <div className="flex items-baseline justify-between">
-              <span key={netState} className="ttt-title ttt-pop text-lg">
-                {netState === "connected"
-                  ? `Online · You are ${myRole}`
-                  : netState === "waiting"
-                    ? "Invite a friend"
-                    : netState === "connecting"
-                      ? "Joining the game"
-                      : "Not connected"}
-              </span>
-              <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                {netState === "connected" ? "Connected" : netState === "waiting" ? "Share the link below" : ""}
-              </span>
-            </div>
-            {netState === "waiting" && (
-              <div className="mt-3 flex items-center gap-2">
-                <input className="ttt-link" readOnly value={shareUrl || "Creating your room…"} onFocus={(e) => e.currentTarget.select()} aria-label="Game link" />
-                {shareUrl && (
-                  <button className="ttt-btn primary small" onClick={canShare ? shareLink : copyLink}>
-                    {canShare ? "Share" : copied ? "Copied" : "Copy"}
-                  </button>
-                )}
-              </div>
-            )}
-            {(netState === "closed" || netState === "error") && (
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <span className="text-xs" style={{ color: "var(--muted)" }}>{netMsg || "You can start a new room."}</span>
-                <button className="ttt-btn ghost small" onClick={startHosting}>New room</button>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Scoreboard */}
         <div className="flex items-stretch gap-2">
           <div
@@ -833,7 +812,7 @@ export default function Home() {
             style={{ "--c": "var(--x)" } as React.CSSProperties}
           >
             <div className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
-              {label("X")}
+              {mode === "ai" ? "You (X)" : mode === "online" ? (mySymbol === "X" ? "You (X)" : "Opponent (X)") : "Player X"}
             </div>
             <span key={scores.X} className="ttt-num">{scores.X}</span>
           </div>
@@ -847,7 +826,7 @@ export default function Home() {
             style={{ "--c": "var(--o)" } as React.CSSProperties}
           >
             <div className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
-              {label("O")}
+              {mode === "ai" ? "AI (O)" : mode === "online" ? (mySymbol === "O" ? "You (O)" : "Opponent (O)") : "Player O"}
             </div>
             <span key={scores.O} className="ttt-num">{scores.O}</span>
           </div>
@@ -862,7 +841,7 @@ export default function Home() {
           <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
             {cells.map((cell, index) => {
               const isWinningCell = !!winningLine?.includes(index);
-              const disabled = !!cell || roundOver || isAiTurn || waitingOnline;
+              const disabled = !!cell || roundOver || isAiTurn || (mode === "online" && (netState !== "connected" || currentPlayer !== mySymbol));
               return (
                 <button
                   key={`${round}-${index}`}
@@ -894,10 +873,10 @@ export default function Home() {
         </p>
 
         <div className="flex flex-wrap justify-center gap-3">
-          <button className={`ttt-btn primary ${roundOver ? "cta" : ""}`} onClick={() => handleNextRound()}>
+          <button className={`ttt-btn primary ${roundOver ? "cta" : ""}`} onClick={handleNextRound} disabled={mode === "online" && (netState !== "connected" || !roundOver)}>
             {nextLabel}
           </button>
-          <button className="ttt-btn ghost" onClick={handleResetScores}>
+          <button className="ttt-btn ghost" onClick={() => resetAll()} disabled={mode === "online" && netState !== "connected"}>
             Reset scores
           </button>
         </div>
