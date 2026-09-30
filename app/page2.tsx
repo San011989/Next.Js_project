@@ -1,13 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DataConnection, Peer } from "peerjs";
 
 type Player = "X" | "O";
 type Cell = Player | null;
-type Mode = "ai" | "pvp" | "online";
-type NetState = "idle" | "waiting" | "connecting" | "connected" | "closed" | "error";
-type Msg = { type: "move"; index: number } | { type: "next" } | { type: "reset" };
+type Mode = "ai" | "pvp";
 
 const WINNING_LINES = [
   [0, 1, 2],
@@ -118,21 +115,24 @@ function makeConfetti() {
 /* --------------------------------- styles -------------------------------- */
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:wght@400;500;600&display=swap');
 
 .ttt {
-  --bg: #0b1020; --card: rgba(20, 28, 52, .82); --ink: #f4f7ff; --muted: #9ba8c7; --line: rgba(151, 169, 211, .2);
-  --x: #67e8f9; --o: #fb7185; --gold: #fbbf24;
+  --bg: #efedfb; --card: #ffffff; --ink: #1b1740; --muted: #6b6890; --line: #d3cfee;
+  --x: #5b3df5; --o: #f0508a; --gold: #f5a524;
   min-height: 100vh;
   font-family: 'DM Sans', system-ui, sans-serif;
   color: var(--ink);
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
   background:
-    radial-gradient(42rem 30rem at 12% 8%, rgba(103, 232, 249, .13), transparent 62%),
-    radial-gradient(42rem 32rem at 90% 88%, rgba(251, 113, 133, .13), transparent 62%),
-    linear-gradient(135deg, #080d1a 0%, #10172c 48%, #0b1020 100%);
+    radial-gradient(60rem 30rem at 15% -10%, color-mix(in srgb, var(--x) 16%, transparent), transparent 60%),
+    radial-gradient(50rem 28rem at 95% 105%, color-mix(in srgb, var(--o) 14%, transparent), transparent 60%),
+    var(--bg);
+}
+@media (prefers-color-scheme: dark) {
+  .ttt {
+    --bg: #12102b; --card: #1c1940; --ink: #f1eeff; --muted: #9a96c7; --line: #3b3670;
+    --x: #8f7bff; --o: #ff7aa8; --gold: #ffc857;
+  }
 }
 
 .ttt-title { font-family: 'Bricolage Grotesque', 'DM Sans', system-ui, sans-serif; font-weight: 800; letter-spacing: -0.035em; }
@@ -222,159 +222,6 @@ const CSS = `
   .ttt *, .ttt *::before, .ttt *::after { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .ttt-confetti { display: none; }
 }
-
-/* ---------------------- refreshed arcade visual layer --------------------- */
-.ttt-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  padding: .4rem .8rem;
-  border: 1px solid rgba(103,232,249,.22);
-  border-radius: 999px;
-  color: var(--x);
-  background: rgba(103,232,249,.055);
-  font-size: .68rem;
-  font-weight: 700;
-  letter-spacing: .2em;
-}
-.ttt-subtitle {
-  margin: -.1rem 0 .3rem;
-  color: var(--muted);
-  font-size: .95rem;
-  text-align: center;
-  letter-spacing: .015em;
-}
-.ttt {
-  min-height: 100vh;
-  padding: clamp(1.5rem, 4vw, 3.5rem) 1rem;
-  gap: 1.25rem;
-}
-.ttt::before, .ttt::after {
-  content: "";
-  position: fixed;
-  width: 18rem;
-  height: 18rem;
-  border-radius: 50%;
-  filter: blur(90px);
-  opacity: .16;
-  pointer-events: none;
-  z-index: -1;
-}
-.ttt::before { background: var(--x); top: 18%; left: -10rem; }
-.ttt::after { background: var(--o); bottom: 5%; right: -10rem; }
-.ttt-title {
-  font-family: 'Space Grotesk', sans-serif;
-  font-size: clamp(2.8rem, 7vw, 4.6rem);
-  line-height: .98;
-  letter-spacing: -.07em;
-  text-align: center;
-  background: linear-gradient(100deg, #f8fbff 15%, var(--x) 55%, var(--o) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  filter: drop-shadow(0 8px 28px rgba(103,232,249,.12));
-  margin: 0;
-}
-.ttt-card {
-  width: min(94vw, 31rem);
-  padding: clamp(1.1rem, 4vw, 2rem);
-  gap: 1.25rem;
-  border-radius: 2rem;
-  background: linear-gradient(145deg, rgba(25, 35, 64, .92), rgba(13, 20, 39, .9));
-  border: 1px solid rgba(180, 198, 239, .17);
-  box-shadow: 0 30px 100px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.06);
-  backdrop-filter: blur(22px);
-}
-.ttt-seg {
-  background: rgba(3, 8, 22, .56);
-  border: 1px solid rgba(151,169,211,.13);
-}
-.ttt-seg-pill {
-  background: linear-gradient(135deg, rgba(103,232,249,.2), rgba(103,232,249,.08));
-  border: 1px solid rgba(103,232,249,.3);
-  box-shadow: 0 0 22px rgba(103,232,249,.08), inset 0 1px 0 rgba(255,255,255,.07);
-}
-.ttt-seg button { color: var(--muted); }
-.ttt-seg button[aria-selected="true"] { color: #f4f7ff; }
-.ttt-level {
-  background: linear-gradient(115deg, rgba(251,191,36,.1), rgba(251,191,36,.035));
-  border: 1px solid rgba(251,191,36,.2);
-  border-radius: 1.15rem;
-}
-.ttt-meter span { background: rgba(190,202,232,.12); }
-.ttt-meter span.on { background: linear-gradient(90deg, #fbbf24, #fde68a); box-shadow: 0 0 12px rgba(251,191,36,.24); }
-.ttt-chip {
-  background: rgba(4, 10, 25, .44);
-  border: 1px solid rgba(151,169,211,.13);
-  border-radius: 1.2rem;
-  padding: .8rem .45rem;
-}
-.ttt-chip[data-active="true"] {
-  background: color-mix(in srgb, var(--c) 10%, rgba(4,10,25,.6));
-  border-color: color-mix(in srgb, var(--c) 55%, transparent);
-  box-shadow: 0 0 28px color-mix(in srgb, var(--c) 13%, transparent), inset 0 1px 0 rgba(255,255,255,.04);
-  transform: translateY(-2px);
-}
-.ttt-num { font-size: 2.15rem; text-shadow: 0 0 22px color-mix(in srgb, var(--c) 22%, transparent); }
-.ttt-board {
-  width: min(82vw, 22rem);
-  padding: .3rem;
-  border-radius: 1.65rem;
-  background: linear-gradient(145deg, rgba(103,232,249,.07), rgba(251,113,133,.06));
-  box-shadow: 0 18px 45px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.04);
-}
-.ttt-hash { stroke: rgba(164,184,226,.22); stroke-width: 4; }
-.ttt-cell { border-radius: 1.1rem; }
-.ttt-cell:not(:disabled):hover {
-  background: rgba(255,255,255,.055);
-  box-shadow: inset 0 0 0 1px rgba(103,232,249,.13);
-}
-.ttt-cell.win {
-  background: rgba(251,191,36,.13);
-  box-shadow: inset 0 0 0 1px rgba(251,191,36,.28), 0 0 25px rgba(251,191,36,.06);
-}
-.ttt-mark { filter: drop-shadow(0 0 12px currentColor); }
-.ttt-mark.x { color: var(--x); }
-.ttt-mark.o { color: var(--o); }
-.ttt-winline { stroke-width: 8; }
-.ttt-status {
-  min-height: 1.8rem;
-  margin: 0;
-  font-size: 1.08rem;
-  letter-spacing: -.015em;
-}
-.ttt-btn {
-  padding: .82rem 1.25rem;
-  border-radius: 1rem;
-  font-size: .9rem;
-  transition: transform .2s, box-shadow .2s, border-color .2s;
-}
-.ttt-btn.primary {
-  color: #07111d;
-  background: linear-gradient(105deg, var(--x), #a5f3fc);
-  box-shadow: 0 8px 25px rgba(103,232,249,.15);
-}
-.ttt-btn.primary:hover { box-shadow: 0 12px 32px rgba(103,232,249,.24); }
-.ttt-btn.ghost {
-  background: rgba(255,255,255,.025);
-  border-color: rgba(151,169,211,.23);
-  color: #d8e1f7;
-}
-.ttt-btn.ghost:hover { background: rgba(255,255,255,.07); border-color: rgba(151,169,211,.4); }
-.ttt-confetti span { box-shadow: 0 0 8px currentColor; }
-/* third tab (online) */
-.ttt-seg.three { grid-template-columns: repeat(3, 1fr); }
-.ttt-seg.three button { padding-inline: .4rem; }
-.ttt-seg.three .ttt-seg-pill { width: calc(33.333% - 2.667px); }
-.ttt-seg.three .ttt-seg-pill[data-pos="1"] { transform: translateX(100%); }
-.ttt-seg.three .ttt-seg-pill[data-pos="2"] { transform: translateX(200%); }
-.ttt-link { flex: 1; min-width: 0; padding: .6rem .8rem; border-radius: .9rem; font-size: .8rem; color: var(--ink); background: rgba(3, 8, 22, .56); border: 1px solid rgba(151,169,211,.13); }
-.ttt-btn.small { padding: .6rem 1rem; }
-@media (max-width: 420px) {
-  .ttt-card { border-radius: 1.5rem; }
-  .ttt-board { width: min(82vw, 19rem); }
-  .ttt-status { font-size: 1rem; }
-  .ttt-btn { flex: 1; padding-inline: .75rem; }
-}
 `;
 
 /* ------------------------------- components ------------------------------ */
@@ -407,25 +254,13 @@ export default function Home() {
   const [leveledUp, setLeveledUp] = useState(false);
   const [round, setRound] = useState(0);
 
-  // online play (peer-to-peer, no account or server of your own needed)
-  const [netState, setNetState] = useState<NetState>("idle");
-  const [netMsg, setNetMsg] = useState("");
-  const [roomId, setRoomId] = useState("");
-  const [myRole, setMyRole] = useState<Player>("X");
-  const [copied, setCopied] = useState(false);
-  const peerRef = useRef<Peer | null>(null);
-  const connRef = useRef<DataConnection | null>(null);
-  const sessionRef = useRef(0);
-  const incomingRef = useRef<(m: Msg) => void>(() => {});
-
   const { winner, line: winningLine } = calculateWinner(cells);
   const isDraw = !winner && cells.every((cell) => cell !== null);
   const roundOver = !!winner || isDraw;
   const currentPlayer: Player = xIsNext ? "X" : "O";
   const isAiTurn = mode === "ai" && !xIsNext && !roundOver;
-  const waitingOnline = mode === "online" && (netState !== "connected" || currentPlayer !== myRole);
 
-  const celebrate = !!winner && !(mode === "ai" && winner === "O") && !(mode === "online" && winner !== myRole);
+  const celebrate = !!winner && !(mode === "ai" && winner === "O");
   const confetti = useMemo(() => (celebrate ? makeConfetti() : []), [celebrate, round]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function applyMove(index: number, player: Player) {
@@ -444,9 +279,8 @@ export default function Home() {
   }
 
   function handleClick(index: number) {
-    if (cells[index] || roundOver || isAiTurn || waitingOnline) return;
+    if (cells[index] || roundOver || isAiTurn) return;
     applyMove(index, currentPlayer);
-    if (mode === "online") send({ type: "move", index });
   }
 
   // Keyboard: press 1-9 to play a cell.
@@ -472,11 +306,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAiTurn, cells, level]);
 
-  function handleNextRound(remote = false) {
-    if (mode === "online" && !remote) {
-      if (netState !== "connected") return;
-      send({ type: "next" });
-    }
+  function handleNextRound() {
     // Difficulty goes up after every finished round in AI mode.
     if (mode === "ai" && roundOver && level < MAX_LEVEL) {
       setLevel(level + 1);
@@ -497,177 +327,6 @@ export default function Home() {
     setRound((r) => r + 1);
   }
 
-  function handleResetScores() {
-    resetAll();
-    if (mode === "online" && netState === "connected") send({ type: "reset" });
-  }
-
-  /* ------------------------------ online play ------------------------------ */
-
-  function send(msg: Msg) {
-    const c = connRef.current;
-    if (c && c.open) c.send(msg);
-  }
-
-  // Always points at the latest render so incoming moves see the current board.
-  incomingRef.current = (m) => {
-    const opponent: Player = myRole === "X" ? "O" : "X";
-    if (m.type === "move") {
-      if (!Number.isInteger(m.index) || m.index < 0 || m.index > 8) return;
-      if (cells[m.index] || roundOver || currentPlayer !== opponent) return;
-      applyMove(m.index, opponent);
-    } else if (m.type === "next") {
-      handleNextRound(true);
-    } else if (m.type === "reset") {
-      resetAll("online");
-    }
-  };
-
-  function closeNet() {
-    sessionRef.current++;
-    connRef.current?.close();
-    peerRef.current?.destroy();
-    connRef.current = null;
-    peerRef.current = null;
-    setNetState("idle");
-    setNetMsg("");
-    setRoomId("");
-    setCopied(false);
-  }
-
-  function attach(c: DataConnection, session: number) {
-    connRef.current = c;
-    c.on("open", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("connected");
-      setNetMsg("");
-    });
-    c.on("data", (d) => {
-      if (session === sessionRef.current) incomingRef.current(d as Msg);
-    });
-    c.on("close", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("closed");
-    });
-    c.on("error", () => {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("The connection was interrupted.");
-    });
-  }
-
-  async function startHosting() {
-    closeNet();
-    const session = sessionRef.current;
-    setMyRole("X");
-    setNetState("waiting");
-    try {
-      const { Peer } = await import("peerjs");
-      if (session !== sessionRef.current) return;
-      const id = `ttt-${Math.random().toString(36).slice(2, 8)}`;
-      const peer = new Peer(id);
-      peerRef.current = peer;
-      peer.on("open", () => {
-        if (session === sessionRef.current) setRoomId(id);
-      });
-      peer.on("connection", (c) => {
-        if (session !== sessionRef.current) return;
-        if (connRef.current) {
-          c.close(); // room already has two players
-          return;
-        }
-        attach(c, session);
-      });
-      peer.on("error", () => {
-        if (session !== sessionRef.current) return;
-        setNetState("error");
-        setNetMsg("Could not create the room. Check your internet and try again.");
-      });
-    } catch {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("Could not start online play.");
-    }
-  }
-
-  async function joinRoom(id: string) {
-    closeNet();
-    const session = sessionRef.current;
-    resetAll("online");
-    setMyRole("O");
-    setNetState("connecting");
-    try {
-      const { Peer } = await import("peerjs");
-      if (session !== sessionRef.current) return;
-      const peer = new Peer();
-      peerRef.current = peer;
-      peer.on("open", () => {
-        if (session !== sessionRef.current) return;
-        attach(peer.connect(id, { reliable: true }), session);
-      });
-      peer.on("error", () => {
-        if (session !== sessionRef.current) return;
-        setNetState("error");
-        setNetMsg("Could not find that room. Ask your friend for a fresh link.");
-      });
-      setTimeout(() => {
-        if (session === sessionRef.current && !connRef.current?.open) {
-          setNetState("error");
-          setNetMsg("Could not connect. Ask your friend for a fresh link.");
-        }
-      }, 15000);
-    } catch {
-      if (session !== sessionRef.current) return;
-      setNetState("error");
-      setNetMsg("Could not start online play.");
-    }
-  }
-
-  function switchMode(next: Mode) {
-    closeNet();
-    if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
-    resetAll(next);
-    if (next === "online") startHosting();
-  }
-
-  const shareUrl =
-    roomId && typeof window !== "undefined"
-      ? `${window.location.origin}${window.location.pathname}?room=${roomId}`
-      : "";
-  const canShare = typeof navigator !== "undefined" && "share" in navigator;
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch {}
-  }
-
-  async function shareLink() {
-    try {
-      await navigator.share({ title: "Tic-Tac-Toe", text: "Play Tic-Tac-Toe with me!", url: shareUrl });
-    } catch {}
-  }
-
-  // Opening a shared link (?room=...) joins that game automatically.
-  useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get("room");
-    const t = id ? setTimeout(() => joinRoom(id), 0) : undefined;
-    return () => {
-      clearTimeout(t);
-      closeNet();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const label = (p: Player) =>
-    mode === "ai"
-      ? p === "X" ? "You (X)" : "AI (O)"
-      : mode === "online"
-        ? p === myRole ? `You (${p})` : `Friend (${p})`
-        : `Player ${p}`;
-
   let status: React.ReactNode;
   let statusColor = "var(--ink)";
   if (winner) {
@@ -677,11 +336,7 @@ export default function Home() {
         ? winner === "X"
           ? "You win! 🎉"
           : "The AI took this one"
-        : mode === "online"
-          ? winner === myRole
-            ? "You win! 🎉"
-            : "Your friend took this one"
-          : `Player ${winner} wins! 🎉`;
+        : `Player ${winner} wins! 🎉`;
   } else if (isDraw) {
     statusColor = "var(--gold)";
     status = "Draw. Nobody wins this round";
@@ -699,21 +354,6 @@ export default function Home() {
         </span>
       </>
     );
-  } else if (mode === "online") {
-    if (netState !== "connected") {
-      statusColor = "var(--gold)";
-      status =
-        netState === "closed"
-          ? "Your friend left the game"
-          : netState === "error"
-            ? "Connection problem"
-            : netState === "connecting"
-              ? "Connecting…"
-              : "Waiting for your friend to join";
-    } else {
-      statusColor = xIsNext ? "var(--x)" : "var(--o)";
-      status = currentPlayer === myRole ? "Your move" : "Friend's move";
-    }
   } else {
     statusColor = xIsNext ? "var(--x)" : "var(--o)";
     status = `Player ${currentPlayer}'s move`;
@@ -749,24 +389,17 @@ export default function Home() {
         </div>
       )}
 
-      <header className="flex flex-col items-center gap-3">
-        <span className="ttt-eyebrow">✦ THE MINI ARCADE ✦</span>
-        <h1 className="ttt-title">Tic-Tac-Toe</h1>
-        <p className="ttt-subtitle">A classic game. A fresh challenge.</p>
-      </header>
+      <h1 className="ttt-title text-5xl">Tic-Tac-Toe</h1>
 
       <main className="ttt-card flex flex-col gap-5">
         {/* Mode switch */}
-        <div className="ttt-seg three" role="tablist" aria-label="Game mode">
-          <div className="ttt-seg-pill" data-pos={mode === "ai" ? 0 : mode === "pvp" ? 1 : 2} />
-          <button role="tab" aria-selected={mode === "ai"} onClick={() => mode !== "ai" && switchMode("ai")}>
+        <div className="ttt-seg" role="tablist" aria-label="Game mode">
+          <div className="ttt-seg-pill" data-pos={mode === "ai" ? 0 : 1} />
+          <button role="tab" aria-selected={mode === "ai"} onClick={() => mode !== "ai" && resetAll("ai")}>
             Player vs AI
           </button>
-          <button role="tab" aria-selected={mode === "pvp"} onClick={() => mode !== "pvp" && switchMode("pvp")}>
+          <button role="tab" aria-selected={mode === "pvp"} onClick={() => mode !== "pvp" && resetAll("pvp")}>
             2 Players
-          </button>
-          <button role="tab" aria-selected={mode === "online"} onClick={() => mode !== "online" && switchMode("online")}>
-            Online
           </button>
         </div>
 
@@ -789,42 +422,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Online room */}
-        {mode === "online" && (
-          <div className="ttt-level">
-            <div className="flex items-baseline justify-between">
-              <span key={netState} className="ttt-title ttt-pop text-lg">
-                {netState === "connected"
-                  ? `Online · You are ${myRole}`
-                  : netState === "waiting"
-                    ? "Invite a friend"
-                    : netState === "connecting"
-                      ? "Joining the game"
-                      : "Not connected"}
-              </span>
-              <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>
-                {netState === "connected" ? "Connected" : netState === "waiting" ? "Share the link below" : ""}
-              </span>
-            </div>
-            {netState === "waiting" && (
-              <div className="mt-3 flex items-center gap-2">
-                <input className="ttt-link" readOnly value={shareUrl || "Creating your room…"} onFocus={(e) => e.currentTarget.select()} aria-label="Game link" />
-                {shareUrl && (
-                  <button className="ttt-btn primary small" onClick={canShare ? shareLink : copyLink}>
-                    {canShare ? "Share" : copied ? "Copied" : "Copy"}
-                  </button>
-                )}
-              </div>
-            )}
-            {(netState === "closed" || netState === "error") && (
-              <div className="mt-3 flex items-center justify-between gap-2">
-                <span className="text-xs" style={{ color: "var(--muted)" }}>{netMsg || "You can start a new room."}</span>
-                <button className="ttt-btn ghost small" onClick={startHosting}>New room</button>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Scoreboard */}
         <div className="flex items-stretch gap-2">
           <div
@@ -833,7 +430,7 @@ export default function Home() {
             style={{ "--c": "var(--x)" } as React.CSSProperties}
           >
             <div className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
-              {label("X")}
+              {mode === "ai" ? "You (X)" : "Player X"}
             </div>
             <span key={scores.X} className="ttt-num">{scores.X}</span>
           </div>
@@ -847,7 +444,7 @@ export default function Home() {
             style={{ "--c": "var(--o)" } as React.CSSProperties}
           >
             <div className="text-xs font-semibold" style={{ color: "var(--muted)" }}>
-              {label("O")}
+              {mode === "ai" ? "AI (O)" : "Player O"}
             </div>
             <span key={scores.O} className="ttt-num">{scores.O}</span>
           </div>
@@ -862,7 +459,7 @@ export default function Home() {
           <div className="absolute inset-0 grid grid-cols-3 grid-rows-3">
             {cells.map((cell, index) => {
               const isWinningCell = !!winningLine?.includes(index);
-              const disabled = !!cell || roundOver || isAiTurn || waitingOnline;
+              const disabled = !!cell || roundOver || isAiTurn;
               return (
                 <button
                   key={`${round}-${index}`}
@@ -894,10 +491,10 @@ export default function Home() {
         </p>
 
         <div className="flex flex-wrap justify-center gap-3">
-          <button className={`ttt-btn primary ${roundOver ? "cta" : ""}`} onClick={() => handleNextRound()}>
+          <button className={`ttt-btn primary ${roundOver ? "cta" : ""}`} onClick={handleNextRound}>
             {nextLabel}
           </button>
-          <button className="ttt-btn ghost" onClick={handleResetScores}>
+          <button className="ttt-btn ghost" onClick={() => resetAll()}>
             Reset scores
           </button>
         </div>
